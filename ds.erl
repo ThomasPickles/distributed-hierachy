@@ -11,10 +11,10 @@ start_parent() ->
     Children=make_children(N),
     loop_parent(Children).
 
-sum_system() ->
+sum_system(What) when (What == count) or (What == number) ->
     Groups = [node() | nodes()],
-    Counts = [rpc(top,Group,count) || Group <- Groups],
-    Total = lists:sum(Counts).
+    Values = [rpc(top,Group,What) || Group <- Groups],
+    lists:sum(Values).
 
 % {RegisteredName, NodeName}
 rpc(Pid, Node, Request) ->
