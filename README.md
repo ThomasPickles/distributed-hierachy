@@ -1,18 +1,17 @@
-### To compile:
 
-From the erlang shell.
-`c(ds).`
+### Setup
 
-Initialise a parent process:
-`Pid = spawn(node(), ds, initialise_parent, []).`
+Start a number of terminals.
+`erl -sname alice -setcookie abc`
+`erl -sname bob -setcookie abc`
+`erl -sname eve -setcookie abc`
 
-Get group count:
-`ds:rpc(Pid,count).`
-Get group total
-`ds:rpc(Pid,number).`
+Daisy chain them, starting with alice
+alice@unix: `ds:init().`
+bob@unix: `ds:init('alice@unix').`
+eve@unix: `ds:init('bob@unix').`
 
-
-### Option 2
-
-`ds:init().`
-`ds:rpc(<parent_proc_no>,count).`
+To get own count:
+alice@unix:`ds:rpc(top,count).`
+To get another group's count:
+alice@unix:`ds:rpc('bob@unix',top,count).`
