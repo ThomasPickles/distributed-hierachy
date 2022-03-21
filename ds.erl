@@ -11,11 +11,10 @@ start_parent() ->
     Children=make_children(N),
     loop_parent(Children).
 
-wait()->
-    receive
-        {done} ->
-            io:format("[Main: ~p] Seems that everyone is done\n",[self()])
-    end.
+sum_system() ->
+    Groups = [node() | nodes()],
+    Counts = [rpc(top,Group,count) || Group <- Groups],
+    Total = lists:sum(Counts).
 
 % {RegisteredName, NodeName}
 rpc(Pid, Node, Request) ->
@@ -25,14 +24,9 @@ rpc(Pid, Node, Request) ->
             Response
     end.
 
+% send to same group
 rpc(Pid, Request) ->
     rpc(Pid,node(),Request).
-    % {Pid,node()} ! {self(), Request},
-    % receive
-    %     Response ->
-    %         Response
-    % end.
-    % rpc(Pid,node(),Request).
 
 init() ->
     io:format("I'm main proc ~p in group [~p], The other groups are [~p]\n",[self(),node(),nodes()]),
@@ -42,8 +36,6 @@ init() ->
 init(Node) ->
     net_adm:ping(Node), % make contact - it's transitive, can can daisy chain to connect all!
     init().
-    % FIXME: how to send a msg from one parent to the others?
-    % [Group ! {Pid,count} || Group <- nodes()].
 
 loop_parent(Children) ->
     receive
@@ -52,17 +44,16 @@ loop_parent(Children) ->
             io:format("Goodbye from top too ~p~n",[self()]),
             From ! 'terminated';
         {Pid,What} ->
-            io:format("[~p] Received~n",[self()]),
             Values = [get_value(Child,What) || Child <- Children],
             % can generalise this to an accumulator for more general fold
             Total =  lists:sum(Values),
-            io:format("Accumulated group value is ~p~n",[Total]),
+            % io:format("Accumulated group value is ~p~n",[Total]),
             Pid ! Total,
             loop_parent(Children)
     end.
 
 get_value(Child,What) ->
-    io:format("Group [~p] top sending request for ~p to ~p~n",[node(),What,Child]),
+    % io:format("Group [~p] top sending request for ~p to ~p~n",[node(),What,Child]),
     Child ! {self(),What},
     receive
         Value ->
@@ -75,14 +66,13 @@ make_children(N) ->
 
 loop_child(Data) ->
     {Count, Value} = Data,
-    % how to decide between sending and receiving?
     receive
         {Top, count} ->
-            io:format("[~p] Received request for count from top~n",[self()]),
+            % io:format("[~p] Received request for count from top~n",[self()]),
             Top ! Count,
             loop_child(Data);
         {Top, number} ->
-            io:format("[~p] Received request for number from top~n",[self()]),
+            % io:format("[~p] Received request for number from top~n",[self()]),
             Top ! Value,
             loop_child(Data);
         {_, done} ->
