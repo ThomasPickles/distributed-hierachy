@@ -14,11 +14,14 @@ eve@unix: `ds:init('bob@unix').`
 ### Queries
 
 **To query the system**\
-`count | number | list`\
-Own group: `ds:req_parent(count).`\
-Other group: `ds:req_parent('bob@unix',count).`\
+`count | aggregate | list | consensus`\
+Own group: `ds:get_for_group(count).`\
+Other group: `ds:get_for_group('bob@unix',count).`\
 System-wide: `ds:get_for_system(count).`
 
 ## TODO
-- CHECK BROADCAST WORKS FROM CHILD NODE
-- get rid of odd print message on same node when doing `ds:broadcast('hello',top,cascade).`
+- do we need to update values after consensus?
+
+## consensus
+
+- chose most frequent value for each group.  However, due to the grouped nature of the data simpson's paradox means this might not be the most frequent in the system.

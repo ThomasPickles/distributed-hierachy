@@ -12,20 +12,34 @@ start_parent() ->
     Children=make_children(N),
     loop_parent(Children).
 
+get_consensus_value(Values) ->
+    % most common element
+    lists:max(Values).
+get_consensus_value(Values,weighted) ->
+    lists:max(Values).
+
 get_for_system(What) when is_atom(What) ->
     Groups = [node() | nodes()],
     case What of
         count ->
-            Values = [req_parent(Group,count) || Group <- Groups],
+            Values = [get_for_group(Group,count) || Group <- Groups],
             Value = lists:sum(Values);
-        number ->
-            Values = [req_parent(Group,number) || Group <- Groups],
+        aggregate ->
+            Values = [get_for_group(Group,aggregate) || Group <- Groups],
             Value = lists:sum(Values);
         list ->
-            Lists = [req_parent(Group,list) || Group <- Groups],
+            Lists = [get_for_group(Group,list) || Group <- Groups],
             Value = lists:append(Lists);
+        % both of these are the same
+        consensus ->
+            Values = [get_for_group(Group,consensus) || Group <- Groups],
+            {Value,_} = get_most_frequent(Values,ignore_weights);
+        weighted_consensus ->
+            Values = [get_for_group(Group,consensus) || Group <- Groups],
+            {Value,_} = get_most_frequent(Values);
         _ ->
             io:format("Not implemented...~n"),
+            Value = 0,
             exit('done')
     end,
     broadcast(Value,no_cascade). % let parents know
@@ -38,7 +52,7 @@ notify_child(Child, msg, Message) ->
 
 % {RegisteredName, NodeName}
 % await response
-req_parent(Group, Request) ->
+get_for_group(Group, Request) ->
     {top,Group} ! {self(), Request},
     receive
         Response ->
@@ -46,11 +60,11 @@ req_parent(Group, Request) ->
     end.
 
 % send to same group
-req_parent(Request) ->
-    req_parent(node(),Request).
+get_for_group(Request) ->
+    get_for_group(node(),Request).
 
 % private - called by parent
-req_child(Child,Request) ->
+get_for_process(Child,Request) ->
     Child ! {self(),Request},
     receive
         Response ->
@@ -82,6 +96,42 @@ init(Node) ->
     net_adm:ping(Node), % make contact - it's transitive, can can daisy chain to connect all!
     init().
 
+accumulate_by_key(Dict,[H|T],ShouldIgnoreWeights) ->
+    case ShouldIgnoreWeights of
+        false ->
+            {Val,Count} = H;
+        true ->
+            {Val,_} = H,
+            Count = 1
+        end,
+    io:format("[~p] Adding {~p,~p} to dict~n",[self(),Val,Count]),
+    NewDict = dict:update_counter(Val, Count, Dict),
+    accumulate_by_key(NewDict, T,ShouldIgnoreWeights);
+accumulate_by_key(Dict,[],_) -> Dict.
+accumulate_by_key(L,ignore_weights) ->
+    accumulate_by_key(dict:new(),L,true).
+accumulate_by_key(L) ->
+    accumulate_by_key(dict:new(),L,false).
+
+get_most_frequent(L,ignore_weights) when is_list(L) ->
+    Dict = accumulate_by_key(L,ignore_weights),
+    List = dict:to_list(Dict),
+    get_most_frequent(List,{-1,0});
+get_most_frequent([H|T],Best) when is_tuple(Best) ->
+    {_,BestCount} = Best,
+    {_,Count} = H,
+    if
+        Count > BestCount ->
+            get_most_frequent(T,H);
+        true ->
+            get_most_frequent(T,Best)
+    end;
+get_most_frequent([],Best) when is_tuple(Best) -> Best.
+get_most_frequent(L) when is_list(L) ->
+    Dict = accumulate_by_key(L),
+    List = dict:to_list(Dict),
+    get_most_frequent(List,{-1,0}).
+
 loop_parent(Children) ->
     receive
         {From,done} ->
@@ -96,14 +146,19 @@ loop_parent(Children) ->
         {Message,no_cascade} ->
             io:format("[~p] Got a msg: ~p~n",[self(),Message]);
         % requests
+        {Pid,consensus} ->
+            Values = [get_for_process(Child,consensus) || Child <- Children],
+            {Value,_} = get_most_frequent(Values),
+            % send max key
+            Pid ! {Value,length(Children)};
         {Pid,list} ->
-            Lists = [req_child(Child,list) || Child <- Children],
+            Lists = [get_for_process(Child,list) || Child <- Children],
             Pid ! lists:append(Lists);
         {Pid,count} ->
-            Values = [req_child(Child,count) || Child <- Children],
+            Values = [get_for_process(Child,count) || Child <- Children],
             Pid ! lists:sum(Values) + 1; % don't forget to count myself!
-        {Pid,number} ->
-            Values = [req_child(Child,number) || Child <- Children],
+        {Pid,aggregate} ->
+            Values = [get_for_process(Child,number) || Child <- Children],
             Pid ! lists:sum(Values)
     end,
     loop_parent(Children).
@@ -120,6 +175,8 @@ loop_child(Data) ->
             Parent ! Count;
         {Parent, number} ->
             Parent ! Value;
+        {Parent, consensus} ->
+            Parent ! {Value,1};
         {Parent, list} ->
             Parent ! List;
         % notifications
