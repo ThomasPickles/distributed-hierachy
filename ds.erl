@@ -18,6 +18,9 @@ get_consensus_value(Values) ->
 get_consensus_value(Values,weighted) ->
     lists:max(Values).
 
+mutex() ->
+    get_for_system(mutex).
+
 get_for_system(What) when is_atom(What) ->
     Groups = [node() | nodes()],
     case What of
@@ -41,6 +44,12 @@ get_for_system(What) when is_atom(What) ->
             ValueWeight = get_most_frequent(Values),
             io:format("[~p] Sending value ~p~n",[self(),ValueWeight]),
             {Value,_} = ValueWeight;
+        mutex ->
+            [First|Rest] = Groups,
+            QueueParents = Rest++[First], % put to back
+            % create the token
+            {top,First} ! {tok,[],QueueParents,main_loop},
+            Value = true;
         _ ->
             io:format("Not implemented...~n"),
             Value = 0,
@@ -100,6 +109,9 @@ init(Node) ->
     net_adm:ping(Node), % make contact - it's transitive, can can daisy chain to connect all!
     init().
 
+critical_section(Direction,Pid) ->
+    io:format("*** Process ~p ~ping critical section ***~n",[Pid,Direction]).
+
 accumulate_by_key(Dict,[H|T],ShouldIgnoreWeights) ->
     case ShouldIgnoreWeights of
         false ->
@@ -149,6 +161,25 @@ loop_parent(Children) ->
             [notify_child(Child,msg,Message) || Child <- Children]; % cascade to children
         {Message,no_cascade} ->
             io:format("[~p] Got a msg: ~p~n",[self(),Message]);
+        {tok,_,QueueParents,WhichLoop} ->
+            case WhichLoop of
+                main_loop ->
+                    % switch to sub_loop
+                    io:format("[~p] Received tok from parent, circulating within group.~n",[self()]),
+                    io:format("[~p] Do i want to go in critical section?.~n",[self()]),
+                    timer:sleep(1000),
+                    QueueGroup = Children++[self()], % append to back of QueueGroup
+                    [Next|Rest] = QueueGroup,
+                    Next ! {tok,Rest,QueueParents,sub_loop};
+                sub_loop ->
+                    % switch to main_loop
+                    io:format("[~p] Received tok from within group, passing to next parent.~n",[self()]),
+                    timer:sleep(1000),
+                    [Next|Rest] = QueueParents,
+                    {top,Next} ! {tok,[],Rest++[node()],main_loop};
+                true ->
+                    io:format("shouldn't reach here")
+            end;
         % requests
         {Pid,consensus} ->
             Values = [get_for_process(Child,consensus) || Child <- Children],
@@ -182,12 +213,27 @@ loop_child(Data) ->
         {Parent, number} ->
             Parent ! Value;
         {Parent, consensus} ->
-            Parent ! {Value,1};
+            Parent ! {self(),1};
         {Parent, list} ->
             Parent ! List;
         % notifications
         {msg, Message} ->
             io:format("[~p] Got a msg: ~p~n",[self(),Message]);
+        {tok,QueueGroup,QueueParents,sub_loop} ->
+            io:format("[~p] Got tok.  QueueGroup is ~p~n",[self(),QueueGroup]),
+            timer:sleep(1000),
+            if Value > 0 ->
+                critical_section(enter,self()),
+                critical_section(exit,self()),
+                NewValue = Value-1;
+            true ->
+                NewValue = Value
+            end,
+            [Next|Rest] = QueueGroup,
+            Next ! {tok,Rest,QueueParents,sub_loop},
+            %% decrement value
+            loop_child({Count, NewValue, List});
+            % is the loop after this loop going to create a really nasty bug?
         {_, done} ->
             io:format("[~p] Terminating.  Goodbye~n",[self()]),
             exit('Finished')
