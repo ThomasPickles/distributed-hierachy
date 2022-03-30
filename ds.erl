@@ -33,10 +33,14 @@ get_for_system(What) when is_atom(What) ->
         % both of these are the same
         consensus ->
             Values = [get_for_group(Group,consensus) || Group <- Groups],
-            {Value,_} = get_most_frequent(Values,ignore_weights);
+            ValueWeight = get_most_frequent(Values,ignore_weights),
+            io:format("[~p] Sending value ~p~n",[self(),ValueWeight]),
+            {Value,_} = ValueWeight;
         weighted_consensus ->
             Values = [get_for_group(Group,consensus) || Group <- Groups],
-            {Value,_} = get_most_frequent(Values);
+            ValueWeight = get_most_frequent(Values),
+            io:format("[~p] Sending value ~p~n",[self(),ValueWeight]),
+            {Value,_} = ValueWeight;
         _ ->
             io:format("Not implemented...~n"),
             Value = 0,
@@ -102,7 +106,7 @@ accumulate_by_key(Dict,[H|T],ShouldIgnoreWeights) ->
             {Val,Count} = H;
         true ->
             {Val,_} = H,
-            Count = 1
+            Count = 1 % all candidates count equally
         end,
     io:format("[~p] Adding {~p,~p} to dict~n",[self(),Val,Count]),
     NewDict = dict:update_counter(Val, Count, Dict),
@@ -150,7 +154,9 @@ loop_parent(Children) ->
             Values = [get_for_process(Child,consensus) || Child <- Children],
             {Value,_} = get_most_frequent(Values),
             % send max key
-            Pid ! {Value,length(Children)};
+            ValueWeight = {Value,length(Children)},
+            io:format("[~p] Sending value ~p~n",[self(),ValueWeight]),
+            Pid ! ValueWeight;
         {Pid,list} ->
             Lists = [get_for_process(Child,list) || Child <- Children],
             Pid ! lists:append(Lists);
