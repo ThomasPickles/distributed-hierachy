@@ -1,45 +1,34 @@
-# TODO: REVERT TO EXPORT ALL?!
-
-# HowTo
+# Setup
 
 Start a number of terminals, sharing a cookie.  Each terminal is a group within the network\
 `erl -sname alice -setcookie abc`\
 `erl -sname bob -setcookie abc`\
 `erl -sname charlie -setcookie abc`
 
-Compile the code on one of the groups.
+Compile the code on one of the groups:
 `c(ds).`
 
-Daisy chain the groups with the previous to get a fully connected network\
+Daisy chain the groups with the previous group to get a fully connected network\
 alice@unix: `ds:init().`\
 bob@unix: `ds:init('alice@unix').`\
 charlie@unix: `ds:init('bob@unix').`
 
-### Queries
+# Run
 
-**To add a process**
-`create_bottom([Group])` ->
-`kill_bottom(Pid,[Group])` ->
+The following API is available from an erlang terminal.
 
+**Message broadcasting**:\
+`ds:broadcast(hello)` broadcasts "hello" to all processes
+`ds:broadcast(hello,no_cascade)` broadcasts "hello" to top-level nodes
 
-**To query the system**\
-`count -> int | aggregate -> int | list -> List[int] | consensus -> {value:int,weight:int}`\
-todo: could i modify this as `get(atom,[Group])`, and then pass `node()` for own group
-Own group: `ds:get_for_group(count).`\
-Other group: `ds:get_for_group('bob@unix',count).`\
-System-wide: `ds:get_for_system(count).`
+**Collective operations**\
+`ds:do(What,[Group])` \
+`What` = count | aggregate | list | create | consensus | weighted-consensus | mutex
 
-**Consensus**\
-Own group: `ds:get_for_group(consensus).`\
-System-wide (each group has an equal say): `ds:get_for_system(consensus).`\
-System-wide (each group counts in proportion to its weight): `ds:get_for_system(weighted_consensus).`\
+*System-wide*: `ds:do(What).` \
+*Own group*: `ds:do(What,node()).`\
+*Another group*: `ds:do(What,'bob@unix').`\
 
-
-**Mutex**\
-System-wide: `ds:mutex().`\
-
-
-## TODO
-- what does Q4d mean?  Dont wait for a group to finish... Is it one process from each group that has the mutex at a time, or one from the whole system?
-- perhaps remove export_all
+**To kill a process**\
+`ds:do(kill,Group,Pid)` to terminate a process in {Group,Pid}
 
