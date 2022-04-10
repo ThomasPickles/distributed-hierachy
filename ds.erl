@@ -1,6 +1,17 @@
 -module(ds).
 % -compile(export_all).
 -export([init/0,init/1,do/1,do/2,do/3,start_top/0,start_bottom/0,broadcast/1,broadcast/2]).
+
+init() ->
+    io:format("I'm main proc ~p in group [~p], The other groups are [~p]\n",[self(),node(),nodes()]),
+    Pid = spawn(node(), ds, start_top, []),
+    io:format("Goodbye from main proc. Top proc [~p] lives on\n",[Pid]),
+    register(top,Pid).
+
+init(Node) ->
+    net_adm:ping(Node), % make contact - it's transitive, can can daisy chain to connect all!
+    init().
+
 start_bottom() ->
     List = [1,2,3],
     Data = {1,rand:uniform(5),List},
@@ -13,34 +24,37 @@ start_top() ->
     BottomProcesses=make_bottom(N),
     loop_top(BottomProcesses).
 
-is_valid(Option,Level) ->
-    SystemWideOptions = [count,aggregate,list,consensus,weighted_consensus,mutex],
-    GroupWideOptions = [create|SystemWideOptions],
+get_options(Level) ->
+    BaseOptions = [count,aggregate,list,consensus],
+    SystemWideOptions = [mutex,weighted_consensus|BaseOptions], % mutex only implemented system-wide
+    GroupWideOptions = [create|BaseOptions], % need to know which node to create process on
     case Level of
         system ->
-            lists:member(Option,SystemWideOptions);
+            SystemWideOptions;
         group ->
-            lists:member(Option,GroupWideOptions)
+            GroupWideOptions
     end.
 do(What) ->
     % system-wide
-    IsValidOption = is_valid(What,system),
+    Options = get_options(system),
+    IsValidOption= lists:member(What,Options),
     case IsValidOption of
         true ->
             get_for_system(What);
         false ->
-            io:format("[~p] Unknown option.  Exiting...",[self()])
+            io:format("[~p] Invalid system-wide option: ~p.  Valid choices are ~p.  Exiting...",[self(),What,Options])
     end.
 do(What,Group) ->
     % within a group
-    IsValidOption = is_valid(What,group),
-        case IsValidOption of
+    Options = get_options(group),
+    IsValidOption= lists:member(What,Options),
+    case IsValidOption of
         true when What == create ->
             create_bottom(Group);
         true ->
             get_for_group(Group,What);
         false ->
-            io:format("[~p] Unknown option.  Exiting...",[self()])
+            io:format("[~p] Invalid group-wide option: ~p.  Valid choices are ~p.  Exiting...",[self(),What,Options])
     end.
 do(kill,Group,Pid) ->
     kill_bottom(Group,Pid).
@@ -64,20 +78,17 @@ get_for_system(What) when is_atom(What) ->
         list ->
             Lists = [get_for_group(Group,list) || Group <- Groups],
             Value = lists:append(Lists);
-        % both of these are the same
         consensus ->
             Values = [get_for_group(Group,consensus) || Group <- Groups],
-            ValueWeight = get_consensus(Values,ignore_weights),
-            io:format("[~p] System-consensus is {Value,Count}=~p~n",[self(),ValueWeight]),
-            {Value,_} = ValueWeight;
+            {Value,Weight} = get_consensus(Values,ignore_weights),
+            io:format("[~p] System (unweighted) consensus is {Val:~p,Count:~p}~n",[self(),Value,Weight]);
         weighted_consensus ->
             Values = [get_for_group(Group,consensus) || Group <- Groups],
-            ValueWeight = get_consensus(Values),
-            io:format("[~p] System-consensus is {Value,Count}= ~p~n",[self(),ValueWeight]),
-            {Value,_} = ValueWeight;
+            {Value,Weight} = get_consensus(Values),
+            io:format("[~p] System (weighted) consensus is {Val:~p,Count:~p}~n",[self(),Value,Weight]);
         mutex ->
             [First|Rest] = Groups,
-            TopQueue = Rest++[First], % put to back
+            TopQueue = Rest++[First], % put own group to back of queue
             % create the token
             {top,First} ! {tok,[],TopQueue,top_loop},
             Value = true
@@ -118,20 +129,18 @@ broadcast(Message,CascadeType) when is_atom(CascadeType) ->
 broadcast(Message) ->
     broadcast(Message,cascade). % default broadcast is to cascade
 
-init() ->
-    io:format("I'm main proc ~p in group [~p], The other groups are [~p]\n",[self(),node(),nodes()]),
-    Pid = spawn(node(), ds, start_top, []),
-    io:format("Goodbye from main proc. Top proc [~p] lives on\n",[Pid]),
-    register(top,Pid).
-
-init(Node) ->
-    net_adm:ping(Node), % make contact - it's transitive, can can daisy chain to connect all!
-    init().
 
 
 make_bottom(0) -> [];
 make_bottom(N) ->
     [spawn(node(), ds, start_bottom, []) | make_bottom(N-1)].
+
+get_consensus(L,ignore_weights) ->
+    Dict = map_value_to_count(dict:new(),L,true),
+    fold_most_frequent(Dict).
+get_consensus(L) ->
+    Dict = map_value_to_count(dict:new(),L,false),
+    fold_most_frequent(Dict).
 
 
 loop_top(BottomProcesses) ->
@@ -178,9 +187,9 @@ loop_top(BottomProcesses) ->
         {Pid,consensus} ->
            Values = [request_from_bottom(Id,consensus) || Id <- BottomProcesses],
            {Value,_} = get_consensus(Values),
-           ValueWeight = {Value,length(BottomProcesses)},
-           io:format("[~p] Group consensus is {Value,Count}=~p~n",[self(),ValueWeight]),
-           Pid ! ValueWeight;
+           Weight = length(BottomProcesses),
+           io:format("[~p] Group consensus is {Val:~p,Count:~p}~n",[self(),Value,Weight]),
+           Pid ! {Value,Weight};
         {Pid,list} ->
            Lists = [request_from_bottom(Id,list) || Id <- BottomProcesses],
            Pid ! lists:append(Lists);
@@ -234,7 +243,7 @@ loop_bottom(Data) ->
 print_mutex(Direction,Pid,Times) ->
     io:format("*** Pid ~p ~ping critical section. N=~p ***~n",[Pid,Direction,Times]).
 
-accumulate_by_key(Dict,[H|T],ShouldIgnoreWeights) ->
+map_value_to_count(Dict,[H|T],ShouldIgnoreWeights) ->
     case ShouldIgnoreWeights of
         false ->
             {Val,Count} = H;
@@ -244,30 +253,20 @@ accumulate_by_key(Dict,[H|T],ShouldIgnoreWeights) ->
         end,
     % if key if found in dict, add count to its value, if not, initialise it to count
     NewDict = dict:update_counter(Val, Count, Dict),
-    accumulate_by_key(NewDict, T,ShouldIgnoreWeights);
-accumulate_by_key(Dict,[],_) -> Dict.
-accumulate_by_key(L,ignore_weights) ->
-    accumulate_by_key(dict:new(),L,true).
-accumulate_by_key(L) ->
-    accumulate_by_key(dict:new(),L,false).
+    map_value_to_count(NewDict, T,ShouldIgnoreWeights);
+map_value_to_count(Dict,[],_) -> Dict.
 
-get_consensus(L,ignore_weights) ->
-    Dict = accumulate_by_key(L,ignore_weights),
-    List = dict:to_list(Dict),
-    get_most_frequent(List,{-1,0}).
-get_consensus(L) ->
-    Dict = accumulate_by_key(L),
-    List = dict:to_list(Dict),
-    get_most_frequent(List,{-1,0}).
-
-get_most_frequent([H|T],Best) when is_tuple(Best) ->
+fold_most_frequent([H|T],Best) when is_tuple(Best) ->
     {_,BestCount} = Best,
     {_,Count} = H,
     if
         Count > BestCount ->
             % found a higher count
-            get_most_frequent(T,H);
+            fold_most_frequent(T,H);
         true ->
-            get_most_frequent(T,Best)
+            fold_most_frequent(T,Best)
     end;
-get_most_frequent([],Best) when is_tuple(Best) -> Best.
+fold_most_frequent([],Best) -> Best.
+fold_most_frequent(Dict) ->
+    List = dict:to_list(Dict),
+    fold_most_frequent(List,{-1,0}).
