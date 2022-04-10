@@ -135,6 +135,7 @@ make_bottom(0) -> [];
 make_bottom(N) ->
     [spawn(node(), ds, start_bottom, []) | make_bottom(N-1)].
 
+
 get_consensus(L,ignore_weights) ->
     Dict = map_value_to_count(dict:new(),L,true),
     fold_most_frequent(Dict).
@@ -243,6 +244,11 @@ loop_bottom(Data) ->
 print_mutex(Direction,Pid,Times) ->
     io:format("*** Pid ~p ~ping critical section. N=~p ***~n",[Pid,Direction,Times]).
 
+% Aggregation proceeds using a map-reduce pipeline:
+% each child proposes a {value,count} tuple, with count=1 for children
+% parent maps these to a dictionary keyed by value and incremented by count
+% parent does a reduce over the dictionary keeping on the tuple with the largest count
+% parent sends {value,child_count} to other parents
 map_value_to_count(Dict,[H|T],ShouldIgnoreWeights) ->
     case ShouldIgnoreWeights of
         false ->

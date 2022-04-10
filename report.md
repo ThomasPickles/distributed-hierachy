@@ -1,44 +1,72 @@
 # Hierachical Systems
-### Thomas Pickles
 
 ## Introduction
 
 We consider a fully-connected network of top-level nodes, with each acting as a co-ordinator for a network of bottom-level nodes.
 
-The hierarchical system confers benefits from an implementation point of view.  The main one of these is the ability to recurse on the levels.  For example, the aggregation that happens between top-level nodes between groups is identical to the aggregation between the processes within a group.  This leads to very straightforward and reusable algorithms.  The main difference is that, within a group, each process carries the same weight whereas, between groups, each top-level node may represent different group sizes.  Retaining these weightings complicates the implementation slightly, since each parent process must send an additional data item representing the count within its group.
+From a high-performance computing (HPC) point of view, the hierarchical system confers a number of benefits.  In effect, it has a tree-like structure and, if the branching factors of the each level are fairly consistent, good load-balancing properties as well as a low diameter while minimising the number of links in the system.  For example, in our two-level system, the maximum distance to pass a message (between bottom-level process in separate groups) is 3 steps: bottom->top->top->bottom.
+
+The hierarchical system confers benefits also from an implementation point of view.  The main one of these is the ability to recurse on the levels.  For example, the aggregation that happens between top-level nodes between groups is identical to the aggregation between the processes within a group.  This leads to very straightforward and reusable algorithms.  The only difference in our case being that, since top-level nodes may represent different group sizes each top process must send an additional count parameter.  For bottom-level (leaf) processes, each count is 1.
+
+### Basic functions
+
+Refer to README.md for basic API.
 
 ### Broadcast
 
---> todo
+When broadcasting a value within the system, the user can choose the depth to cascade down to.  In this case, top-level nodes accept a parameter which determines whether or not to cascade the message down to the bottom-level processes in its group.
 
-Within a hierarchical system, the broadcast can be done down to a certain depth.  In this case, top-level nodes accept a parameter which determines whether or not to cascade the message down to the bottom-level processes in its group.
+## Consensus
 
-- Parent nodes are contacted first.  They accept a parameter saying whether to cascade the message to their child nodes.
+The criteria for selecting the consensus value is fairly open.  Common approaches are to pick the highest or lowest id, or the most common value, or perhaps the median value.  However, for consistency, we must select a value from one of the processes; accordingly, operators like the mean or the sum cannot be used.
 
+For our consensus, we choose a value based on the most-frequent in the group.  This is mostly for convenience since, for weighted-consensus, we need some notion of frequency, so we may as well build this directly into the selection criterion.  Note that (as I have interpreted the question), top-level nodes do not propose a value themselves, they only perform the aggregation and broadcast the consensus value to other top-level nodes.
 
-### Consensus
+*Consensus Algorithm:*\
+Initiator:
+```code
+consensus():
+  values <- {}
+  foreach top in tops:
+    send(<request>,self,top)
+    u, count <- receive(<proposal>,top)
+    count = 1 if unweighted else count
+    values[u] += count
+  v <- keymax(values)
+  broadcast(<chosen>,v)
+```
 
-The criterion for choosing a consensus value is fairly free.  Common approaches are to pick the highest or lowest id, or the most common value, or perhaps the median value.  However, for consistency, we cannot select an operation that gives a value that is not held by one of the processes; accordingly, operators like the mean or the sum cannot be used.
+Top:
+```
+receive(<request>,InitId):
+  values <- {}
+  foreach bottom in group:
+    send(<request>,self,bottom)
+    u <- receive(<proposal>,bottom)
+    values[u] += 1
+  v <- keymax(values)
+  send(<proposal>,InitId,{v,group.count})
+```
 
-For our consensus, we choose a value based on the most-frequent in the group.  The reason is that, since we are also required to do a weighted consensus, we will need some notion of frequency, so it is simplest to build this directly into the selection criterion.  Note that (as I have interpreted the question), top-level nodes do not propose a value themselves, they only perform the aggregation and transmit values to other top-level nodes.
+Bottom:
+```
+receive(<req>,Pid):
+  send(<proposal>,Pid,value)
+```
 
-*Consensus Algorithm:*
-- Aggregation proceeds using a map-reduce pipeline:
-  - each child proposes a {value,count} tuple, with count=1 for children
-  - parent maps these to a dictionary keyed by value and incremented by count
-  - parent does a reduce over the dictionary keeping on the tuple with the largest count
-  - parent sends {value,child_count} to other parents
-- Since the aggregation is based on a dictionary-implementation, in the event of a tie, there is no guarantee on any particular ordering.  Accordingly, the consensus value may be unstable.
-- Node values are not updated based on a calling of the consensus algorithm.
-- Chose most frequent value for each group.  However, due to the grouped nature of the data simpson's paradox means this might not be the most frequent in the system.
+Notes on implementation:
 
-A possible extension is to broadcast the consensus value to all processes within the system, and require them to update their values.  I have not implemented this, but it is not a complicated addition, requiring just one additional rule on bottom-level processes.
+- Since the aggregation is based on a dictionary-implementation, in the event of a tie, there is no guarantee on any particular ordering.  Accordingly, the consensus value may be unstable between repeated executions.
 
-### Mutex
+- A point to recognise is the consensus value may not actually be the most frequent value in the system. Due to the grouped nature of the data, the most frequent of the most frequent,  might not be the most frequent in the system.  This effect is often known as Simpson's paradox.
 
-To implement a mutex, a reasonable question is why not simply use the consensus to determine which process can enter critical section?  We could, for example, change our consensus condition to return the id of the highest id process, and then all processes would have consensus on which process may enter the critical section.  To see why this is not a possible solution, we need to remember the two key properties of a successful mutex implementation: safely, and liveness.
-- Safety: at most one process can enter the critical section at a time
-- Liveness/Starvation-free: every process the wants to enter the critical section will get there in a finite amount of time
+- A possible extension is to broadcast the consensus value to all processes within the system, and require them to update their values.  I have not implemented this, but it is not a complicated addition, requiring just one additional rule on bottom-level processes.
+
+## Mutex
+
+To implement a mutex, a reasonable question is why not simply use the consensus to determine which process can enter critical section?  We could, for example, change our consensus condition to return the id of the highest id process, and then all processes would have consensus on which process may enter the critical section.  To see why this is not a possible solution, we need to remember the two key properties of a successful mutex implementation:
+> **Safety**: at most one process can enter the critical section at a time\
+> **Liveness**: every process the wants to enter the critical section will get there in a finite amount of time (starvation-free)
 
 The safety condition ensures we avoid bad behaviour, the second enforces good behaviour.
 
@@ -48,30 +76,16 @@ What about if we insist that a process that has finished in the critical section
 
 There are a number of possible implemenations.  We restriction the discussion to token-based approaches. In this implementation, only the process holding the token has the right to enter the critical section. The token thus ensures the safety property.
 
-Further, we ensure the liveness property by circulating the token in a virtual ring of all the gropus, and all the processes.  In this hierarchical architecture the ring is a natural choice, since we can link all parents though a main ring, and a parent and its children via sub rings off the main ring.  The token then circulates through the main ring, doing a loop through though each group before being passed to the next parent in the ring.
+### Implementation
+
+In this hierarchical architecture the ring is a natural choice, since we can link all parents though a main ring, and a parent and its children via sub rings off the main ring.  In effect, the token then circulates around all processes through the main ring, doing a tour around the sub-ring of the group before being passed to the next top in the main ring.
+We thus ensure the liveness property because each process sees the token with every pass around the main ring, so that a single process cannot monopolise the lock.
 
 ![Fig 1](ring.png)
 
 After a process exits the critical section, it passes on the token through every process in the network before it can next receive it. In order to traverse the network, the token keeps track of two queues, the top-level groups, and the bottom-level processes within its current group.
 
-### Mutex algorithm
-top-level node starts with token,
-node adds a list of its children to the token, appending its own id to the list
-- while the queue is not empty
-- next = queue.dequeue()
-- send to next
-- on receipt of token,
-- if child wants to enter critical section
-  -- it does
-  -- it decrements its counter
-- child puts its value to the tail of the list and sends token on to next child on the list by sending its value to the back of t
-- when token gets back to parent, it sends on to next parent in list
-
-An improvement to the algorithm is a request-based implementation.  In this case the token could circulate around the ring of top-level nodes; the top level node would only switch to the sub-rings if a bottom-level process requests the token.  In effect, each top-level node keeps a list of bottom-level processes that wish to enter the critical section.  On receipt of the token, the top-level node thus checks whether there are any processes in the list and, if so, appends its own Pid to the queue before circulating in the group.   This ensures that the token does not take needless trajectories around the sub-rings if none of the processes of a group want to enter the critical section.
-- picture of ring within ring
-- Todo: have i got time to make this improvement?  Seems simple enough
-
-An alternative is the Suzuki-Kasami implementaion [reference](), where we ensure.
+An improvement to the algorithm is a request-based implementation.  In this case the token could circulate around the ring of top-level nodes; the top level node would then only switch to its sub-ring if a bottom-level process in the group had requested the token since the last passage of the token.  In effect, each top-level node keeps a list of bottom-level processes that wish to enter the critical section.  On receipt of the token, the top-level node thus checks whether there are any processes in the list and, if so, appends its own Pid to this queue before circulating in the group.   This ensures that the token does not take needless tours around the sub-ring if none of the processes of a group want to enter the critical section.
 
 ## Limitations
 
